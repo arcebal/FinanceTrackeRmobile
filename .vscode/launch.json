@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "FinanceTrackerReminder (Supabase)",
+      "request": "launch",
+      "type": "dart",
+      "flutterMode": "debug",
+      "toolArgs": [
+        "--dart-define=SUPABASE_URL=https://labifbzrxntbvgzuhfgr.supabase.co",
+        "--dart-define=SUPABASE_PUBLISHABLE_KEY=sb_publishable_DcKbL7CRkuI8kmXEVMlEEg_hnEVxG_b"
+      ]
+    }
+  ]
+}

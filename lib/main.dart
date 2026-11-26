@@ -422,18 +422,16 @@ class _FinanceShellState extends State<FinanceShell> {
   int _index = 0;
   int _dashboardVersion = 0;
   List<Widget> get _pages => [
-    DashboardPage(key: ValueKey(_dashboardVersion)),
+    DashboardPage(
+      key: ValueKey(_dashboardVersion),
+      onSeeMoreDues: () => setState(() => _index = 4),
+    ),
     TransactionsPage(),
-    AccountsPage(),
+    WalletsPage(),
     BudgetsPage(),
-    RecurringPage(),
+    DuesPage(),
   ];
-  final _titles = const [
-    'Transactions',
-    'Accounts',
-    'Budgets',
-    'Recurring expenses',
-  ];
+  final _titles = const ['Transactions', 'Wallets', 'Budgets', 'Due'];
 
   @override
   void initState() {
@@ -493,7 +491,7 @@ class _FinanceShellState extends State<FinanceShell> {
         NavigationDestination(
           icon: Icon(Icons.account_balance_wallet_outlined),
           selectedIcon: Icon(Icons.account_balance_wallet),
-          label: 'Accounts',
+          label: 'Wallets',
         ),
         NavigationDestination(
           icon: Icon(Icons.savings_outlined),
@@ -503,7 +501,7 @@ class _FinanceShellState extends State<FinanceShell> {
         NavigationDestination(
           icon: Icon(Icons.event_repeat_outlined),
           selectedIcon: Icon(Icons.event_repeat),
-          label: 'Recurring',
+          label: 'Due',
         ),
       ],
     ),

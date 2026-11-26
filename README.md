@@ -9,9 +9,10 @@ FinanceTrackerReminder is an Android-first Flutter app backed by Supabase. The a
 
 ## Supabase setup
 
-1. Open the Supabase project SQL Editor and run [`supabase/migrations/202611240001_initial_schema.sql`](supabase/migrations/202611240001_initial_schema.sql) once. It creates the app tables, row-level security policies, balance and recurring-transaction functions, and a private avatar bucket.
-2. In **Authentication → URL Configuration**, add `personal-finance://auth-callback` to the redirect URL allowlist.
-3. Enable email sign-in. Use the project URL and publishable key in the app. Never put a `service_role` or secret key in a mobile app.
+1. Open the Supabase project SQL Editor and run [`supabase/migrations/202611240001_initial_schema.sql`](supabase/migrations/202611240001_initial_schema.sql) once.
+2. Then run [`supabase/migrations/202611260001_v2_timestamps_and_dues.sql`](supabase/migrations/202611260001_v2_timestamps_and_dues.sql). It adds transaction timestamps and one-time dues, and copies each active recurring expense's next scheduled occurrence into the new Due list. It leaves the old recurring records intact.
+3. In **Authentication → URL Configuration**, add `personal-finance://auth-callback` to the redirect URL allowlist.
+4. Enable email sign-in. Use the project URL and publishable key in the app. Never put a `service_role` or secret key in a mobile app.
 
 ## Run from VS Code
 

@@ -5,6 +5,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 final _db = Supabase.instance.client;
 final _currency = NumberFormat.currency(locale: 'en_PH', symbol: '₱');
 final _date = DateFormat('MMM d, yyyy');
+final _dateTime = DateFormat('MM-dd-yy · h:mm a');
+final _dueDate = DateFormat('MM-dd-yy');
 
 List<Map<String, dynamic>> _maps(dynamic value) =>
     List<Map<String, dynamic>>.from(value as List);
@@ -12,6 +14,15 @@ String _money(Object? value) =>
     _currency.format((value as num?)?.toDouble() ?? 0);
 String _error(Object error) =>
     error is PostgrestException ? error.message : error.toString();
+
+List<Map<String, dynamic>> _sortDues(List<Map<String, dynamic>> dues) {
+  dues.sort(
+    (a, b) =>
+        DateTime.parse(a['due_date'] as String)
+            .compareTo(DateTime.parse(b['due_date'] as String)),
+  );
+  return dues;
+}
 
 Widget _loading() => const Center(child: CircularProgressIndicator());
 Widget _problem(Object error, VoidCallback retry) => Center(
@@ -53,7 +64,8 @@ Widget _empty(String message, {IconData icon = Icons.inbox_outlined}) => Center(
 );
 
 class DashboardPage extends StatefulWidget {
-  const DashboardPage({super.key});
+  const DashboardPage({super.key, required this.onSeeMoreDues});
+  final VoidCallback onSeeMoreDues;
 
   @override
   State<DashboardPage> createState() => _DashboardPageState();
@@ -77,10 +89,10 @@ class _DashboardPageState extends State<DashboardPage> {
       await _db
           .from('transactions')
           .select(
-            'id,type,amount,description,transaction_date,categories(name,color),accounts(name)',
+            'id,type,amount,description,transaction_at,transaction_date,created_at,categories(name,color),accounts(name)',
           )
           .isFilter('deleted_at', null)
-          .order('transaction_date', ascending: false)
+          .order('transaction_at', ascending: false)
           .order('created_at', ascending: false)
           .limit(5),
     );
@@ -99,22 +111,14 @@ class _DashboardPageState extends State<DashboardPage> {
           .eq('year', now.year)
           .eq('month', now.month),
     );
-    final upcoming = _maps(
-      await _db
-          .from('recurring_transactions')
-          .select('description,type,amount,next_due_date,accounts(name)')
-          .eq('type', 'expense')
-          .eq('is_active', true)
-          .gte(
-            'next_due_date',
-            DateFormat('yyyy-MM-dd')
-                .format(DateTime(now.year, now.month, now.day)),
-          )
-          .lte(
-            'next_due_date',
-            DateFormat('yyyy-MM-dd').format(now.add(const Duration(days: 7))),
-          )
-          .order('next_due_date'),
+    final upcoming = _sortDues(
+      _maps(
+        await _db
+            .from('dues')
+            .select('*,accounts(name),categories(name)')
+            .isFilter('deleted_at', null)
+            .order('due_date', ascending: true),
+      ),
     );
     final income = monthTransactions
         .where((r) => r['type'] == 'income')
@@ -209,10 +213,10 @@ class _DashboardPageState extends State<DashboardPage> {
               ),
             ),
             const SizedBox(height: 8),
-            _sectionTitle(context, 'My accounts'),
+            _sectionTitle(context, 'My wallets'),
             if (accounts.isEmpty)
               _empty(
-                'Add an account to start tracking your money.',
+                'Add a wallet to start tracking your money.',
                 icon: Icons.account_balance_wallet_outlined,
               )
             else
@@ -275,23 +279,36 @@ class _DashboardPageState extends State<DashboardPage> {
                   ),
                 );
               }),
-            _sectionTitle(context, 'Due in the next 7 days'),
+            _sectionTitle(context, 'Upcoming dues'),
             if (upcoming.isEmpty)
               _empty(
-                'No recurring items are due this week.',
+                'No upcoming dues. Add a bill or expense reminder.',
                 icon: Icons.event_available_outlined,
               )
             else
-              ...upcoming.map(
-                (r) => Card(
-                  child: ListTile(
-                    leading: const Icon(Icons.event_repeat),
-                    title: Text(r['description'] as String),
-                    subtitle: Text(
-                      '${r['next_due_date']} · ${(r['accounts'] as Map?)?['name'] ?? 'Account'}',
+              ...upcoming
+                  .take(5)
+                  .map(
+                    (r) => Card(
+                      child: ListTile(
+                        leading: const Icon(Icons.event_outlined),
+                        title: Text(r['description'] as String),
+                        subtitle: Text(
+                          _dueDate.format(
+                            DateTime.parse(r['due_date'] as String),
+                          ),
+                        ),
+                        trailing: Text(_money(r['amount'])),
+                        onTap: () => _showDueDetails(context, r),
+                      ),
                     ),
-                    trailing: Text(_money(r['amount'])),
                   ),
+            if (upcoming.length > 5)
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: widget.onSeeMoreDues,
+                  child: const Text('See more'),
                 ),
               ),
             _sectionTitle(context, 'Recent activity'),
@@ -361,6 +378,7 @@ Widget _transactionTile(Map<String, dynamic> t) {
   final category = t['categories'] as Map<String, dynamic>?;
   return Card(
     child: ListTile(
+      isThreeLine: true,
       leading: CircleAvatar(
         backgroundColor: (income
             ? const Color(0xFFE7F7ED)
@@ -377,8 +395,24 @@ Widget _transactionTile(Map<String, dynamic> t) {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
-      subtitle: Text(
-        '${category?['name'] ?? 'No category'} · ${t['transaction_date']}',
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            category?['name'] as String? ?? 'No category',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          Text(
+            _dateTime.format(
+              DateTime.parse(
+                (t['transaction_at'] ?? t['created_at']) as String,
+              ).toLocal(),
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
       ),
       trailing: Text(
         '${income ? '+' : '−'}${_money(t['amount'])}',
@@ -391,13 +425,40 @@ Widget _transactionTile(Map<String, dynamic> t) {
   );
 }
 
-class AccountsPage extends StatefulWidget {
-  const AccountsPage({super.key});
-  @override
-  State<AccountsPage> createState() => _AccountsPageState();
+void _showDueDetails(BuildContext context, Map<String, dynamic> due) {
+  showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(due['description'] as String),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(_dueDate.format(DateTime.parse(due['due_date'] as String))),
+          Text('Amount: ${_money(due['amount'])}'),
+          Text('Wallet: ${(due['accounts'] as Map?)?['name'] ?? 'Wallet'}'),
+          Text(
+            'Category: ${(due['categories'] as Map?)?['name'] ?? 'Expense'}',
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close'),
+        ),
+      ],
+    ),
+  );
 }
 
-class _AccountsPageState extends State<AccountsPage> {
+class WalletsPage extends StatefulWidget {
+  const WalletsPage({super.key});
+  @override
+  State<WalletsPage> createState() => _WalletsPageState();
+}
+
+class _WalletsPageState extends State<WalletsPage> {
   late Future<List<Map<String, dynamic>>> _future = _load();
   bool _archived = false;
   Future<List<Map<String, dynamic>>> _load() async {
@@ -415,7 +476,7 @@ class _AccountsPageState extends State<AccountsPage> {
   Future<void> _edit([Map<String, dynamic>? row]) async {
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (_) => AccountEditor(initial: row),
+      builder: (_) => WalletEditor(initial: row),
     );
     if (result == null) return;
     try {
@@ -476,7 +537,7 @@ class _AccountsPageState extends State<AccountsPage> {
               final rows = s.data!;
               if (rows.isEmpty) {
                 return _empty(
-                  _archived ? 'No archived accounts.' : 'No accounts yet. Add cash or an e-wallet account to get started.',
+                  _archived ? 'No archived wallets.' : 'No wallets yet. Add cash or an e-wallet to get started.',
                   icon: Icons.account_balance_wallet_outlined,
                 );
               }
@@ -556,19 +617,19 @@ class _AccountsPageState extends State<AccountsPage> {
         : FloatingActionButton.extended(
             onPressed: () => _edit(),
             icon: const Icon(Icons.add),
-            label: const Text('Account'),
+            label: const Text('Wallet'),
           ),
   );
 }
 
-class AccountEditor extends StatefulWidget {
-  const AccountEditor({super.key, this.initial});
+class WalletEditor extends StatefulWidget {
+  const WalletEditor({super.key, this.initial});
   final Map<String, dynamic>? initial;
   @override
-  State<AccountEditor> createState() => _AccountEditorState();
+  State<WalletEditor> createState() => _WalletEditorState();
 }
 
-class _AccountEditorState extends State<AccountEditor> {
+class _WalletEditorState extends State<WalletEditor> {
   final _key = GlobalKey<FormState>();
   late String _name = widget.initial?['name'] as String? ?? '';
   late String _description = widget.initial?['description'] as String? ?? '';
@@ -577,59 +638,66 @@ class _AccountEditorState extends State<AccountEditor> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: Text(widget.initial == null ? 'New account' : 'Edit account'),
-    content: Form(
-      key: _key,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextFormField(
-            initialValue: _name,
-            decoration: const InputDecoration(labelText: 'Name'),
-            validator: (v) =>
-                v == null || v.trim().isEmpty ? 'Enter a name.' : null,
-            onSaved: (v) => _name = v!.trim(),
-          ),
-          const SizedBox(height: 10),
-          DropdownButtonFormField<String>(
-            initialValue: _type,
-            decoration: const InputDecoration(labelText: 'Type'),
-            items: const [
-              DropdownMenuItem(value: 'cash', child: Text('Cash')),
-              DropdownMenuItem(value: 'e-wallet', child: Text('E-wallet')),
+    title: Text(widget.initial == null ? 'New wallet' : 'Edit wallet'),
+    content: SizedBox(
+      width: 360,
+      child: Form(
+        key: _key,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                initialValue: _name,
+                decoration: const InputDecoration(labelText: 'Name'),
+                validator: (v) =>
+                    v == null || v.trim().isEmpty ? 'Enter a name.' : null,
+                onSaved: (v) => _name = v!.trim(),
+              ),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<String>(
+                initialValue: _type,
+                decoration: const InputDecoration(labelText: 'Type'),
+                items: const [
+                  DropdownMenuItem(value: 'cash', child: Text('Cash')),
+                  DropdownMenuItem(value: 'e-wallet', child: Text('E-wallet')),
+                ],
+                onChanged: (v) => setState(() => _type = v!),
+              ),
+              const SizedBox(height: 10),
+              if (widget.initial == null)
+                TextFormField(
+                  initialValue: _balance,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: const InputDecoration(
+                    labelText: 'Starting balance',
+                  ),
+                  validator: (v) =>
+                      double.tryParse(v ?? '') == null || double.parse(v!) < 0
+                      ? 'Enter a valid balance.'
+                      : null,
+                  onSaved: (v) => _balance = v!,
+                )
+              else
+                const Padding(
+                  padding: EdgeInsets.only(top: 12),
+                  child: Text(
+                    'The balance changes when you add or edit transactions.',
+                  ),
+                ),
+              const SizedBox(height: 10),
+              TextFormField(
+                initialValue: _description,
+                decoration: const InputDecoration(
+                  labelText: 'Description (optional)',
+                ),
+                onSaved: (v) => _description = v?.trim() ?? '',
+              ),
             ],
-            onChanged: (v) => setState(() => _type = v!),
           ),
-          const SizedBox(height: 10),
-          if (widget.initial == null)
-            TextFormField(
-              initialValue: _balance,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-              ),
-              decoration: const InputDecoration(labelText: 'Starting balance'),
-              validator: (v) =>
-                  double.tryParse(v ?? '') == null || double.parse(v!) < 0
-                  ? 'Enter a valid balance.'
-                  : null,
-              onSaved: (v) => _balance = v!,
-            )
-          else
-            const Padding(
-              padding: EdgeInsets.only(top: 12),
-              child: Text(
-                'The balance changes when you add or edit transactions.',
-              ),
-            ),
-          const SizedBox(height: 10),
-          TextFormField(
-            initialValue: _description,
-            decoration: const InputDecoration(
-              labelText: 'Description (optional)',
-            ),
-            onSaved: (v) => _description = v?.trim() ?? '',
-          ),
-        ],
+        ),
       ),
     ),
     actions: [
@@ -671,13 +739,11 @@ class _TransactionsPageState extends State<TransactionsPage> {
     final result = _archived
         ? await query
               .not('deleted_at', 'is', null)
-              .order('transaction_date', ascending: false)
-              .order('created_at', ascending: false)
+              .order('transaction_at', ascending: false)
               .limit(250)
         : await query
               .isFilter('deleted_at', null)
-              .order('transaction_date', ascending: false)
-              .order('created_at', ascending: false)
+              .order('transaction_at', ascending: false)
               .limit(250);
     return _maps(result);
   }
@@ -708,22 +774,27 @@ class _TransactionsPageState extends State<TransactionsPage> {
     }
   }
 
-  Future<void> _changeDeleted(Map<String, dynamic> row, bool restore) async {
+  Future<bool> _changeDeleted(Map<String, dynamic> row, bool restore) async {
     try {
-      await _db
+      final changed = await _db
           .from('transactions')
           .update({
             'deleted_at': restore
                 ? null
                 : DateTime.now().toUtc().toIso8601String(),
           })
-          .eq('id', row['id']);
-      _refresh();
+          .eq('id', row['id'])
+          .select('id');
+      if ((changed as List).isEmpty) {
+        throw Exception('Transaction was not updated. Refresh and try again.');
+      }
+      return true;
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(_error(e))));
       }
+      return false;
     }
   }
 
@@ -777,9 +848,9 @@ class _TransactionsPageState extends State<TransactionsPage> {
                             key: ValueKey(r['id']),
                             direction: DismissDirection.endToStart,
                             confirmDismiss: (_) async {
-                              await _changeDeleted(r, !_archived);
-                              return false;
+                              return _changeDeleted(r, !_archived);
                             },
+                            onDismissed: (_) => _refresh(),
                             background: Container(
                               color: Colors.blue,
                               alignment: Alignment.centerRight,
@@ -839,6 +910,8 @@ class _TransactionEditorState extends State<TransactionEditor> {
   late String _amount = widget.initial?['amount']?.toString() ?? '';
   late String _description = widget.initial?['description'] as String? ?? '';
   late DateTime _dateValue =
+      DateTime.tryParse(widget.initial?['transaction_at'] as String? ?? '')
+          ?.toLocal() ??
       DateTime.tryParse(widget.initial?['transaction_date'] as String? ?? '') ??
       DateTime.now();
   late Future<List<Map<String, dynamic>>> _options = _load();
@@ -887,7 +960,7 @@ class _TransactionEditorState extends State<TransactionEditor> {
             width: 300,
             child: Text(
               accounts.isEmpty
-                  ? 'Create an account before adding transactions.'
+                  ? 'Create a wallet before adding transactions.'
                   : 'Create a $_type category first.',
             ),
           );
@@ -927,7 +1000,7 @@ class _TransactionEditorState extends State<TransactionEditor> {
                   const SizedBox(height: 10),
                   DropdownButtonFormField<String>(
                     initialValue: _account,
-                    decoration: const InputDecoration(labelText: 'Account'),
+                    decoration: const InputDecoration(labelText: 'Wallet'),
                     items: accounts
                         .map(
                           (a) => DropdownMenuItem(
@@ -1008,6 +1081,7 @@ class _TransactionEditorState extends State<TransactionEditor> {
           final state = _key.currentState;
           if (state == null || !state.validate()) return;
           state.save();
+          final now = DateTime.now();
           Navigator.pop(context, {
             'account_id': _account,
             'category_id': _category,
@@ -1015,6 +1089,15 @@ class _TransactionEditorState extends State<TransactionEditor> {
             'amount': double.parse(_amount),
             'description': _description.isEmpty ? null : _description,
             'transaction_date': DateFormat('yyyy-MM-dd').format(_dateValue),
+            'transaction_at': DateTime(
+              _dateValue.year,
+              _dateValue.month,
+              _dateValue.day,
+              now.hour,
+              now.minute,
+              now.second,
+              now.millisecond,
+            ).toUtc().toIso8601String(),
           });
         },
         child: const Text('Save'),
@@ -1444,20 +1527,22 @@ class _CategoryEditorState extends State<CategoryEditor> {
   );
 }
 
-class RecurringPage extends StatefulWidget {
-  const RecurringPage({super.key});
+class DuesPage extends StatefulWidget {
+  const DuesPage({super.key});
   @override
-  State<RecurringPage> createState() => _RecurringPageState();
+  State<DuesPage> createState() => _DuesPageState();
 }
 
-class _RecurringPageState extends State<RecurringPage> {
+class _DuesPageState extends State<DuesPage> {
   late Future<List<Map<String, dynamic>>> _future = _load();
-  Future<List<Map<String, dynamic>>> _load() async => _maps(
-    await _db
-        .from('recurring_transactions')
-        .select('*,accounts(name),categories(name)')
-        .eq('type', 'expense')
-        .order('next_due_date'),
+  Future<List<Map<String, dynamic>>> _load() async => _sortDues(
+    _maps(
+      await _db
+          .from('dues')
+          .select('*,accounts(name),categories(name)')
+          .isFilter('deleted_at', null)
+          .order('due_date', ascending: true),
+    ),
   );
   void _refresh() => setState(() {
     _future = _load();
@@ -1466,26 +1551,11 @@ class _RecurringPageState extends State<RecurringPage> {
   Future<void> _create() async {
     final value = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (_) => const RecurringEditor(),
+      builder: (_) => const DueEditor(),
     );
     if (value == null) return;
     try {
-      await _db.from('recurring_transactions').insert(value);
-      _refresh();
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(_error(e))));
-      }
-    }
-  }
-
-  Future<void> _confirm(Map<String, dynamic> row) async {
-    try {
-      await _db.rpc(
-        'confirm_recurring_transaction',
-        params: {'p_id': row['id']},
-      );
+      await _db.from('dues').insert(value);
       _refresh();
     } catch (e) {
       if (mounted) {
@@ -1497,7 +1567,6 @@ class _RecurringPageState extends State<RecurringPage> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Recurring expenses')),
     body: FutureBuilder<List<Map<String, dynamic>>>(
       future: _future,
       builder: (context, s) {
@@ -1506,53 +1575,48 @@ class _RecurringPageState extends State<RecurringPage> {
         if (s.data!.isEmpty) {
           return _empty(
             'Review upcoming expenses and bills here.',
-            icon: Icons.event_repeat_outlined,
+            icon: Icons.event_outlined,
           );
         }
         return ListView(
           padding: const EdgeInsets.all(12),
-          children: s.data!.map((r) {
-            final due = r['next_due_date'] as String?;
-            final isDue =
-                due != null && !DateTime.parse(due).isAfter(DateTime.now());
-            return Card(
-              child: ListTile(
-                leading: const Icon(Icons.event_repeat_outlined),
-                title: Text(r['description'] as String),
-                subtitle: Text(
-                  '${r['frequency']} · ${due ?? 'No next date'} · ${(r['accounts'] as Map?)?['name'] ?? ''}',
+          children: s.data!
+              .map(
+                (r) => Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.event_outlined),
+                    title: Text(r['description'] as String),
+                    subtitle: Text(
+                      _dueDate.format(DateTime.parse(r['due_date'] as String)),
+                    ),
+                    trailing: Text(_money(r['amount'])),
+                    onTap: () => _showDueDetails(context, r),
+                  ),
                 ),
-                trailing: isDue
-                    ? TextButton(
-                        onPressed: () => _confirm(r),
-                        child: const Text('Confirm'),
-                      )
-                    : Text(_money(r['amount'])),
-              ),
-            );
-          }).toList(),
+              )
+              .toList(),
         );
       },
     ),
     floatingActionButton: FloatingActionButton.extended(
       onPressed: _create,
       icon: const Icon(Icons.add),
-      label: const Text('Recurring'),
+      label: const Text('Due'),
     ),
   );
 }
 
-class RecurringEditor extends StatefulWidget {
-  const RecurringEditor({super.key});
+class DueEditor extends StatefulWidget {
+  const DueEditor({super.key});
   @override
-  State<RecurringEditor> createState() => _RecurringEditorState();
+  State<DueEditor> createState() => _DueEditorState();
 }
 
-class _RecurringEditorState extends State<RecurringEditor> {
+class _DueEditorState extends State<DueEditor> {
   final _key = GlobalKey<FormState>();
-  String _frequency = 'monthly', _description = '', _amount = '';
+  String _description = '', _amount = '';
   String? _account, _category;
-  final _start = DateTime.now();
+  DateTime _dueDate = DateTime.now();
   late final Future<List<List<Map<String, dynamic>>>> _options = _load();
   Future<List<List<Map<String, dynamic>>>> _load() async => [
     _maps(
@@ -1573,7 +1637,7 @@ class _RecurringEditorState extends State<RecurringEditor> {
   ];
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('New recurring item'),
+    title: const Text('New due'),
     content: SizedBox(
       width: 360,
       child: FutureBuilder<List<List<Map<String, dynamic>>>>(
@@ -1595,7 +1659,7 @@ class _RecurringEditorState extends State<RecurringEditor> {
           if (accounts.isEmpty || categories.isEmpty) {
             return Text(
               accounts.isEmpty
-                  ? 'Create an account first.'
+                  ? 'Create a wallet first.'
                   : 'Create a matching category first.',
             );
           }
@@ -1624,7 +1688,7 @@ class _RecurringEditorState extends State<RecurringEditor> {
                   const SizedBox(height: 10),
                   DropdownButtonFormField<String>(
                     initialValue: _account,
-                    decoration: const InputDecoration(labelText: 'Account'),
+                    decoration: const InputDecoration(labelText: 'Wallet'),
                     items: accounts
                         .map(
                           (a) => DropdownMenuItem(
@@ -1650,19 +1714,6 @@ class _RecurringEditorState extends State<RecurringEditor> {
                     onChanged: (v) => setState(() => _category = v),
                   ),
                   const SizedBox(height: 10),
-                  DropdownButtonFormField<String>(
-                    initialValue: _frequency,
-                    decoration: const InputDecoration(labelText: 'Frequency'),
-                    items: const [
-                      DropdownMenuItem(value: 'weekly', child: Text('Weekly')),
-                      DropdownMenuItem(
-                        value: 'monthly',
-                        child: Text('Monthly'),
-                      ),
-                    ],
-                    onChanged: (v) => setState(() => _frequency = v!),
-                  ),
-                  const SizedBox(height: 10),
                   TextFormField(
                     initialValue: _amount,
                     keyboardType: const TextInputType.numberWithOptions(
@@ -1675,6 +1726,21 @@ class _RecurringEditorState extends State<RecurringEditor> {
                         ? 'Enter an amount above zero.'
                         : null,
                     onSaved: (v) => _amount = v!,
+                  ),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Due date'),
+                    subtitle: Text(_date.format(_dueDate)),
+                    trailing: const Icon(Icons.calendar_month),
+                    onTap: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: _dueDate,
+                        firstDate: DateTime(2000),
+                        lastDate: DateTime(2200),
+                      );
+                      if (picked != null) setState(() => _dueDate = picked);
+                    },
                   ),
                 ],
               ),
@@ -1693,18 +1759,13 @@ class _RecurringEditorState extends State<RecurringEditor> {
           final s = _key.currentState;
           if (s == null || !s.validate()) return;
           s.save();
-          final date = DateFormat('yyyy-MM-dd').format(_start);
           Navigator.pop(context, {
             'account_id': _account,
             'category_id': _category,
             'type': 'expense',
-            'frequency': _frequency,
             'description': _description,
             'amount': double.parse(_amount),
-            'start_date': date,
-            'next_due_date': date,
-            'interval': 1,
-            'reminder_days_before': 3,
+            'due_date': DateFormat('yyyy-MM-dd').format(_dueDate),
           });
         },
         child: const Text('Save'),
